@@ -13,7 +13,7 @@ def main():
     plt.rcParams['font.family'] = 'Times New Roman'
     sns.set(font='Times New Roman')
 
-    # Crear carpeta de salida "analisis_completo" si no existe
+    # Crear carpeta de salida "analisis" si no existe
     output_folder = "analisis"
     os.makedirs(output_folder, exist_ok=True)
 
@@ -172,6 +172,64 @@ def main():
     plt.tight_layout()
     ts_daily_path = os.path.join(output_folder, "grafica_6_series_temporal_hum_int_daily.png")
     plt.savefig(ts_daily_path)
+    plt.close()
+    
+    # -----------------------------------------------------------
+    # Nuevos Gráficos: Integración de Métricas Exteriores e Interior
+    # -----------------------------------------------------------
+    
+    # Gráfica 7: Histograma Comparativo de Temperatura (Interior vs. Exterior)
+    plt.figure(figsize=(8,4))
+    temp_data_comp = pd.melt(df_reset[['temp_int', 'temp_ext']], var_name='Ambiente', value_name='Temperatura')
+    sns.histplot(data=temp_data_comp, x='Temperatura', hue='Ambiente', bins=50,
+                 element="step", stat="density", common_norm=False)
+    plt.title("Gráfica 7: Histograma Comparativo de Temperatura\n(Interior vs. Exterior)")
+    plt.xlabel("Temperatura (°C)")
+    plt.ylabel("Densidad")
+    plt.tight_layout()
+    comp_hist_temp_path = os.path.join(output_folder, "grafica_7_histograma_comparativo_temp.png")
+    plt.savefig(comp_hist_temp_path)
+    plt.close()
+    
+    # Gráfica 8: Histograma Comparativo de Humedad (Interior vs. Exterior)
+    plt.figure(figsize=(8,4))
+    hum_data_comp = pd.melt(df_reset[['hum_int', 'hum_ext']], var_name='Ambiente', value_name='Humedad')
+    sns.histplot(data=hum_data_comp, x='Humedad', hue='Ambiente', bins=50,
+                 element="step", stat="density", common_norm=False)
+    plt.title("Gráfica 8: Histograma Comparativo de Humedad\n(Interior vs. Exterior)")
+    plt.xlabel("Humedad (%)")
+    plt.ylabel("Densidad")
+    plt.tight_layout()
+    comp_hist_hum_path = os.path.join(output_folder, "grafica_8_histograma_comparativo_hum.png")
+    plt.savefig(comp_hist_hum_path)
+    plt.close()
+    
+    # Gráfica 9: Serie Temporal Horaria Comparativa de Temperatura (Interior vs. Exterior)
+    plt.figure(figsize=(10,4))
+    plt.plot(hourly_df.index, hourly_df['temp_int_mean'], marker='o', linestyle='-', label="Interior")
+    plt.plot(hourly_df.index, hourly_df['temp_ext_mean'], marker='o', linestyle='-', label="Exterior")
+    plt.title("Gráfica 9: Serie Temporal Horaria - Temperatura Promedio\n(Interior vs. Exterior)")
+    plt.xlabel("Hora")
+    plt.ylabel("Temperatura (°C)")
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    ts_temp_comp_path = os.path.join(output_folder, "grafica_9_series_temporal_temp_comparativa.png")
+    plt.savefig(ts_temp_comp_path)
+    plt.close()
+    
+    # Gráfica 10: Serie Temporal Diaria Comparativa de Humedad (Interior vs. Exterior)
+    plt.figure(figsize=(10,4))
+    plt.plot(daily_df.index, daily_df['hum_int_mean'], marker='o', linestyle='-', label="Interior")
+    plt.plot(daily_df.index, daily_df['hum_ext_mean'], marker='o', linestyle='-', label="Exterior")
+    plt.title("Gráfica 10: Serie Temporal Diaria - Humedad Promedio\n(Interior vs. Exterior)")
+    plt.xlabel("Día")
+    plt.ylabel("Humedad (%)")
+    plt.xticks(rotation=45)
+    plt.legend()
+    plt.tight_layout()
+    ts_hum_comp_path = os.path.join(output_folder, "grafica_10_series_temporal_hum_comparativa.png")
+    plt.savefig(ts_hum_comp_path)
     plt.close()
 
     # -------------------------------
