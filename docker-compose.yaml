@@ -1,8 +1,11 @@
 name: tuxedb
 services:
-    tuxedb:
-        volumes:
-            - ./db:/app/instance
-        ports:
-            - 5050:5000
-        image: cooldockerizer93/tuxedb:latest
+  myapp:
+    build: .
+    environment:
+      - UID=1000  # Change as needed
+      - GID=1000  # Change as needed
+    ports:
+      - "6060:6060"
+    volumes:
+      - .:/app
