@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN chmod +x /entrypoint.sh
 
 # Expose the application port
-EXPOSE 5000
+EXPOSE 6060
 
 # Set the entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
