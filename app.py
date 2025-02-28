@@ -222,6 +222,15 @@ def obtener_mediciones():
     mediciones_list = [med.to_dict() for med in mediciones]
     return jsonify(mediciones_list), 200
 
+# Endpoint para obtener la última entrada de la base de datos
+@app.route('/mediciones/last', methods=['GET'])
+def obtener_ultima_medicion():
+    ultima_medicion = Medicion.query.order_by(Medicion.timestamp.desc()).first()
+    if not ultima_medicion:
+        return jsonify({"mensaje": "No hay mediciones en la base de datos."}), 404
+    return jsonify(ultima_medicion.to_dict()), 200
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
