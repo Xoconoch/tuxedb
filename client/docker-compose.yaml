@@ -1,0 +1,13 @@
+name: tuxclient
+services:
+  tuxclient:
+    image: cooldockerizer93/tuxclient
+    environment:
+      - UID=1000  # Change as needed
+      - GID=1000  # Change as needed
+      - W_API_KEY = "OpenWeatherMap_api_key"
+      - BASE_URL = "http://tuxedb.host/"
+    volumes:
+      - type: bind
+        source: ./backup/backup.db
+        target: /app/backup.db
