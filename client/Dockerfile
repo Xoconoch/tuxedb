@@ -22,4 +22,4 @@ RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Default command
-CMD ["python", "reader.py"]
+CMD ["python", "client.py"]
