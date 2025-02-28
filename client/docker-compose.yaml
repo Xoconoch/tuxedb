@@ -5,8 +5,9 @@ services:
     environment:
       - UID=1000  # Change as needed
       - GID=1000  # Change as needed
-      - W_API_KEY = "OpenWeatherMap_api_key"
-      - BASE_URL = "http://tuxedb.host/"
+      - W_API_KEY=OpenWeatherMap_api_key
+      - BASE_URL=http://tuxedb.host/
+      - TZ=Your_Timezone
     volumes:
       - ./backup:/app/backup
     devices:

@@ -7,6 +7,10 @@ import sqlite3
 from datetime import datetime
 import os
 
+# Respect the TZ environment variable (Unix only)
+if "TZ" in os.environ:
+    time.tzset()
+
 # Ensure the backup directory exists and set the database path
 BACKUP_DIR = "backup"
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -198,7 +202,7 @@ def main():
             # Obtener datos meteorológicos
             temp_ext, hum_ext = get_weather()
 
-            # Generar timestamp e ID de la medición
+            # Generar timestamp e ID de la medición (este timestamp respeta el TZ definido)
             timestamp = datetime.now()
             med_id = generate_id(timestamp, temperature, humidity, ph, temp_ext, hum_ext)
 
