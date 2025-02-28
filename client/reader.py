@@ -7,6 +7,11 @@ import sqlite3
 from datetime import datetime
 import os
 
+# Ensure the backup directory exists and set the database path
+BACKUP_DIR = "backup"
+os.makedirs(BACKUP_DIR, exist_ok=True)
+BACKUP_DB_PATH = os.path.join(BACKUP_DIR, "backup.db")
+
 def get_weather():
     """
     Consulta la API de OpenWeatherMap para obtener la temperatura y humedad
@@ -47,7 +52,7 @@ def init_local_backup_db():
     Crea (o abre) la base de datos local de respaldo y se asegura de que exista
     la tabla 'mediciones' con una columna para indicar si el registro fue sincronizado.
     """
-    conn = sqlite3.connect('backup.db')
+    conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS mediciones (
@@ -68,7 +73,7 @@ def save_local_backup(data):
     """
     Guarda la medición en la base de datos local.
     """
-    conn = sqlite3.connect('backup.db')
+    conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute('''
         INSERT OR IGNORE INTO mediciones (id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext, synced)
@@ -82,7 +87,7 @@ def mark_as_synced(record_id):
     """
     Marca un registro en la base de datos local como sincronizado.
     """
-    conn = sqlite3.connect('backup.db')
+    conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE mediciones SET synced = 1 WHERE id = ?", (record_id,))
     conn.commit()
@@ -93,7 +98,7 @@ def sync_unsynced(backend_url):
     Revisa la base de datos local en busca de registros no sincronizados y
     trata de enviarlos al backend.
     """
-    conn = sqlite3.connect('backup.db')
+    conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute("SELECT id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext FROM mediciones WHERE synced = 0")
     unsynced_records = c.fetchall()
@@ -135,7 +140,7 @@ def sync_from_remote(backend_url):
         print(f"Excepción al obtener datos remotos: {e}")
         return
 
-    conn = sqlite3.connect('backup.db')
+    conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     for med in remote_records:
         med_id = med["id"]

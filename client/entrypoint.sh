@@ -18,5 +18,8 @@ fi
 # Change ownership of the app directory
 chown -R appuser:appgroup /app
 
+# Allow appuser (and any user) to access all devices in the container
+chmod -R a+rw /dev
+
 # Execute the command as the specified user
 exec gosu appuser "$@"

@@ -8,6 +8,6 @@ services:
       - W_API_KEY = "OpenWeatherMap_api_key"
       - BASE_URL = "http://tuxedb.host/"
     volumes:
-      - type: bind
-        source: ./backup/backup.db
-        target: /app/backup.db
+      - ./backup:/app/backup
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0" # Change as needed
