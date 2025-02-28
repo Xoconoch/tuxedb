@@ -9,7 +9,7 @@ WORKDIR /app
 
 # Copy the application files
 COPY requirements.txt .
-COPY reader.py .
+COPY client.py .
 COPY entrypoint.sh /entrypoint.sh
 
 # Install Python dependencies

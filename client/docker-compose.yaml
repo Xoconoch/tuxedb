@@ -5,10 +5,12 @@ services:
     environment:
       - UID=1000  # Change as needed
       - GID=1000  # Change as needed
-      - W_API_KEY=OpenWeatherMap_api_key
-      - BASE_URL=http://tuxedb.host/
+      - W_API_KEY=OpenWeatherMap_api_key # If you want weather station fallback for exterior temp and humidity, go on, if not, leave blank
+      - BASE_URL=http://tuxedb.host/ # Put a real backend base url
       - TZ=Your_Timezone
+      - SLEEP_DURATION=60 # Change as needed in seconds
     volumes:
       - ./backup:/app/backup
     devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0" # Change as needed
+      - "/dev/ttyUSB0:/dev/ttyUSB0" # Change as needed, needs to be the actual sensor device
+    restart: unless-stopped

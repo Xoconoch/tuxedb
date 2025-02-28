@@ -160,6 +160,9 @@ def sync_from_remote(backend_url):
     conn.close()
 
 def main():
+    # Retrieve sleep duration from the environment variable SLEEP_DURATION (default: 1 second)
+    sleep_duration = float(os.getenv("SLEEP_DURATION", 1))
+    
     # Inicializar base de datos local de respaldo
     init_local_backup_db()
     
@@ -239,7 +242,7 @@ def main():
         except Exception as e:
             print(f"Error al leer los datos: {e}")
         
-        time.sleep(1)  # Espera antes de la siguiente lectura
+        time.sleep(sleep_duration)
 
 if __name__ == '__main__':
     main()
