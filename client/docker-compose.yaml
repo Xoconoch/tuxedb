@@ -12,5 +12,5 @@ services:
     volumes:
       - ./backup:/app/backup
     devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0" # Change as needed, needs to be the actual sensor device
+      - "/dev/ttyUSB0:/dev/ttyUSB0" # Change as needed, must be the actual sensor device
     restart: unless-stopped
