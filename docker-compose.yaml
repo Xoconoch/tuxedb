@@ -1,6 +1,6 @@
 name: tuxedb
 services:
-  myapp:
+  tuxedb:
     image: cooldockerizer93/tuxedb
     environment:
       - UID=1000  # Change as needed
