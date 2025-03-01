@@ -9,6 +9,7 @@ services:
       - BASE_URL=http://tuxedb.local/ # Put a real backend base url like http://192.168.1.30:6060/
       - TZ=Your_Timezone
       - SLEEP_DURATION=60 # Change as needed in seconds
+      - LOCATION=City Name,Cuntry_Code # For example: Los Angeles,US
     volumes:
       - ./backup:/app/backup
     devices:

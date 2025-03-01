@@ -6,6 +6,8 @@ import requests
 import sqlite3
 from datetime import datetime
 import os
+import board
+import adafruit_dht
 
 # Respect the TZ environment variable (Unix only)
 if "TZ" in os.environ:
@@ -16,22 +18,37 @@ BACKUP_DIR = "backup"
 os.makedirs(BACKUP_DIR, exist_ok=True)
 BACKUP_DB_PATH = os.path.join(BACKUP_DIR, "backup.db")
 
-def get_weather():
+# Inicializar el sensor DHT22 una sola vez.
+try:
+    dht22_sensor = adafruit_dht.DHT22(board.D4)
+    print("Sensor DHT22 inicializado correctamente.")
+except Exception as e:
+    print(f"Error inicializando el sensor DHT22: {e}")
+    dht22_sensor = None
+
+def get_weather_fallback():
     """
     Consulta la API de OpenWeatherMap para obtener la temperatura y humedad
-    actual en Tuxtla Gutiérrez (México) usando unidades métricas.
+    actual usando unidades métricas.
+    
+    Si la variable de entorno LOCATION está definida, se utiliza como la ubicación.
+    Si no está definida, se omite la consulta y se devuelven 0.0 para ambas mediciones.
     """
+    location = os.getenv("LOCATION")
+    if not location:
+        print("No se proporcionó la variable LOCATION; se omite la consulta de OpenWeatherMap.")
+        return 0.0, 0.0
     appid = os.getenv("W_API_KEY")
     if not appid:
         raise ValueError("La variable de entorno W_API_KEY no está configurada.")
-    weather_url = f"http://api.openweathermap.org/data/2.5/weather?q=Tuxtla%20Gutierrez,MX&appid={appid}&units=metric"
+    weather_url = f"http://api.openweathermap.org/data/2.5/weather?q={location}&appid={appid}&units=metric"
     try:
         response = requests.get(weather_url, timeout=5)
         if response.status_code == 200:
             weather_data = response.json()
             temp_ext = weather_data["main"]["temp"]
             hum_ext = weather_data["main"]["humidity"]
-            print(f"Datos meteorológicos obtenidos: Temp_ext = {temp_ext}°C, Hum_ext = {hum_ext}%")
+            print(f"Datos meteorológicos obtenidos de OpenWeatherMap para '{location}': Temp_ext = {temp_ext}°C, Hum_ext = {hum_ext}%")
         else:
             print(f"Error al obtener datos meteorológicos: {response.status_code} - {response.text}")
             temp_ext = 0.0
@@ -42,20 +59,31 @@ def get_weather():
         hum_ext = 0.0
     return temp_ext, hum_ext
 
+def get_weather():
+    """
+    Intenta obtener la temperatura y la humedad del sensor DHT22.
+    Si falla, se utiliza la API de OpenWeatherMap (si LOCATION está definida)
+    como respaldo.
+    """
+    global dht22_sensor
+    if dht22_sensor is None:
+        print("Sensor DHT22 no disponible. Usando OpenWeatherMap como respaldo.")
+        return get_weather_fallback()
+    try:
+        temp_ext = dht22_sensor.temperature
+        hum_ext = dht22_sensor.humidity
+        print(f"Datos del sensor DHT22: Temp_ext = {temp_ext:.1f}°C, Hum_ext = {hum_ext:.1f}%")
+        return temp_ext, hum_ext
+    except Exception as error:
+        print(f"Error al leer sensor DHT22: {error}. Usando OpenWeatherMap como respaldo.")
+        return get_weather_fallback()
+
 def generate_id(timestamp, temp_int, hum_int, ph, temp_ext, hum_ext):
-    """
-    Genera un ID único basado en el timestamp y las mediciones, de forma idéntica
-    a como se hace en el backend.
-    """
     ts_str = timestamp.strftime("%Y-%m-%d-%H-%M-%S")
     data_str = f"{ts_str}-{temp_int}-{hum_int}-{ph}-{temp_ext}-{hum_ext}"
     return data_str
 
 def init_local_backup_db():
-    """
-    Crea (o abre) la base de datos local de respaldo y se asegura de que exista
-    la tabla 'mediciones' con una columna para indicar si el registro fue sincronizado.
-    """
     conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -74,9 +102,6 @@ def init_local_backup_db():
     conn.close()
 
 def save_local_backup(data):
-    """
-    Guarda la medición en la base de datos local.
-    """
     conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -88,9 +113,6 @@ def save_local_backup(data):
     conn.close()
 
 def mark_as_synced(record_id):
-    """
-    Marca un registro en la base de datos local como sincronizado.
-    """
     conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE mediciones SET synced = 1 WHERE id = ?", (record_id,))
@@ -98,10 +120,6 @@ def mark_as_synced(record_id):
     conn.close()
 
 def sync_unsynced(backend_url):
-    """
-    Revisa la base de datos local en busca de registros no sincronizados y
-    trata de enviarlos al backend.
-    """
     conn = sqlite3.connect(BACKUP_DB_PATH)
     c = conn.cursor()
     c.execute("SELECT id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext FROM mediciones WHERE synced = 0")
@@ -129,10 +147,6 @@ def sync_unsynced(backend_url):
             print(f"Excepción al sincronizar el registro {record[0]}: {http_err}")
 
 def sync_from_remote(backend_url):
-    """
-    Consulta el backend para obtener todas las mediciones y asegura que la base
-    de datos local incluya cualquier registro que falte (lo marca como sincronizado).
-    """
     try:
         response = requests.get(backend_url, timeout=5)
         if response.status_code == 200:
@@ -160,29 +174,22 @@ def sync_from_remote(backend_url):
     conn.close()
 
 def main():
-    # Retrieve sleep duration from the environment variable SLEEP_DURATION (default: 1 second)
     sleep_duration = float(os.getenv("SLEEP_DURATION", 1))
-    
-    # Inicializar base de datos local de respaldo
     init_local_backup_db()
     
-    # Configurar la comunicación Modbus
-    instrument = minimalmodbus.Instrument('/dev/ttyUSB0', 1)  # Puerto y dirección del esclavo
+    instrument = minimalmodbus.Instrument('/dev/ttyUSB0', 1)
     instrument.serial.baudrate = 4800
     instrument.serial.bytesize = 8
     instrument.serial.parity   = serial.PARITY_NONE
     instrument.serial.stopbits = 1
-    instrument.serial.timeout  = 1  # segundos
+    instrument.serial.timeout  = 1
     instrument.mode = minimalmodbus.MODE_RTU
     
-    # Construir las URLs del backend a partir de la variable BASE_URL
     base_url = os.getenv("BASE_URL", "http://localhost:6060")
     if base_url.endswith('/'):
         base_url = base_url[:-1]
     mediciones_url = base_url + "/mediciones"
     mediciones_last_url = base_url + "/mediciones/last"
-    
-    # Se utiliza mediciones_url para las operaciones POST y GET
     backend_url = mediciones_url
     
     print(f"Usando backend URL: {backend_url}")
@@ -190,7 +197,6 @@ def main():
     
     while True:
         try:
-            # Leer mediciones del dispositivo Modbus
             humidity_raw = instrument.read_register(registeraddress=0, number_of_decimals=0, functioncode=3, signed=False)
             humidity = humidity_raw / 10.0
 
@@ -202,14 +208,11 @@ def main():
 
             print(f"Humedad: {humidity:.1f}%  |  Temperatura: {temperature:.1f}°C  |  pH: {ph:.1f}")
 
-            # Obtener datos meteorológicos
+            # Obtener datos meteorológicos desde el sensor DHT22 o, en caso de error, de OpenWeatherMap
             temp_ext, hum_ext = get_weather()
 
-            # Generar timestamp e ID de la medición (este timestamp respeta el TZ definido)
             timestamp = datetime.now()
             med_id = generate_id(timestamp, temperature, humidity, ph, temp_ext, hum_ext)
-
-            # Preparar el diccionario de datos
             data = {
                 "id": med_id,
                 "timestamp": timestamp.isoformat(),
@@ -220,10 +223,8 @@ def main():
                 "hum_ext": hum_ext
             }
             
-            # Guardar la medición en la base de datos local
             save_local_backup(data)
             
-            # Intentar enviar la medición al backend remoto
             try:
                 response = requests.post(backend_url, json=data, timeout=5)
                 if response.status_code == 201:
@@ -234,11 +235,8 @@ def main():
             except Exception as http_err:
                 print(f"Excepción al enviar la medición: {http_err}")
             
-            # Sincronizar registros locales pendientes
             sync_unsynced(backend_url)
-            # Actualizar el respaldo local con registros remotos que falten
             sync_from_remote(backend_url)
-
         except Exception as e:
             print(f"Error al leer los datos: {e}")
         
