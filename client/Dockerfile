@@ -1,13 +1,16 @@
-# Use a lightweight Python base image
+# Use a Raspberry Pi compatible Python base image
 FROM python:3.12-slim
 
-# Install dependencies
+# Install required system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     python3-dev \
     gcc \
-    libc6-dev
-
+    gosu \
+    libc6-dev \
+    python3-rpi.gpio \
+    libgpiod2 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
 WORKDIR /app
