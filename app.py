@@ -222,13 +222,25 @@ def obtener_mediciones():
     mediciones_list = [med.to_dict() for med in mediciones]
     return jsonify(mediciones_list), 200
 
-# Endpoint para obtener la última entrada de la base de datos
+# Endpoint para obtener las últimas q mediciones basadas en el timestamp
 @app.route('/mediciones/last', methods=['GET'])
-def obtener_ultima_medicion():
-    ultima_medicion = Medicion.query.order_by(Medicion.timestamp.desc()).first()
-    if not ultima_medicion:
+def obtener_ultimas_mediciones():
+    # Obtener el parámetro 'q', por defecto 1 si no se especifica
+    try:
+        q = int(request.args.get('q', 1))
+        if q <= 0:
+            return jsonify({"error": "El parámetro 'q' debe ser un entero positivo."}), 400
+    except ValueError:
+        return jsonify({"error": "El parámetro 'q' debe ser un entero válido."}), 400
+
+    # Consultar las últimas q mediciones ordenadas por timestamp descendente
+    mediciones = Medicion.query.order_by(Medicion.timestamp.desc()).limit(q).all()
+    if not mediciones:
         return jsonify({"mensaje": "No hay mediciones en la base de datos."}), 404
-    return jsonify(ultima_medicion.to_dict()), 200
+
+    # Convertir las mediciones a diccionarios para la respuesta JSON
+    mediciones_list = [med.to_dict() for med in mediciones]
+    return jsonify(mediciones_list), 200
 
 
 if __name__ == '__main__':

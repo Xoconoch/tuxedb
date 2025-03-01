@@ -146,9 +146,15 @@ def sync_unsynced(backend_url):
         except Exception as http_err:
             print(f"Excepción al sincronizar el registro {record[0]}: {http_err}")
 
-def sync_from_remote(backend_url):
+def sync_from_remote(last_url):
+    """
+    Sincroniza insertando en el respaldo local las mediciones que aún no se tienen.
+    Se utiliza el endpoint /mediciones/last para obtener únicamente las últimas 5 mediciones.
+    """
     try:
-        response = requests.get(backend_url, timeout=5)
+        # Se consulta el endpoint con el parámetro q=5 para obtener las últimas 5 mediciones
+        url = last_url + "?q=5"
+        response = requests.get(url, timeout=5)
         if response.status_code == 200:
             remote_records = response.json()
         else:
@@ -190,10 +196,10 @@ def main():
         base_url = base_url[:-1]
     mediciones_url = base_url + "/mediciones"
     mediciones_last_url = base_url + "/mediciones/last"
-    backend_url = mediciones_url
-    
-    print(f"Usando backend URL: {backend_url}")
-    print(f"Usando backend Last URL: {mediciones_last_url}")
+    backend_url = mediciones_url  # Para POST
+
+    print(f"Usando backend URL para POST: {backend_url}")
+    print(f"Usando backend Last URL para GET: {mediciones_last_url}")
     
     while True:
         try:
@@ -236,7 +242,8 @@ def main():
                 print(f"Excepción al enviar la medición: {http_err}")
             
             sync_unsynced(backend_url)
-            sync_from_remote(backend_url)
+            # Se sincronizan las últimas 5 mediciones desde el endpoint /mediciones/last?q=5
+            sync_from_remote(mediciones_last_url)
         except Exception as e:
             print(f"Error al leer los datos: {e}")
         
