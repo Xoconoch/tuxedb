@@ -28,7 +28,6 @@ Para ambos contenedores, no olvides configurar tus variables de entorno según s
 # API
 
 El backend tiene una api que puedes implementar en alguna otra aplicación (o sencillamente puedes usar la base de datos de manera directa)
----
 
 ## Endpoint: POST /mediciones
 
