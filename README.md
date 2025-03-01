@@ -25,10 +25,9 @@ Conecta tu sensor RS485 al adaptador USB, conectalo a la máquina cliente, encue
 
 Para ambos contenedores, no olvides configurar tus variables de entorno según sea necesario. Puedes comprobar si tu backend está disponible desde tu máquina cliente usando `curl "http://{ip_backend}:6060/mediciones"`. El servidor debería de responder con un array de todas las mediciones disponibles (o un array vacío, de no haber ninguna).
 
-# Endpoints de la api
+# API
 
-A continuación se detalla la documentación de cada endpoint de la API:
-
+El backend tiene una api que puedes implementar en alguna otra aplicación (o sencillamente puedes usar la base de datos de manera directa)
 ---
 
 ## Endpoint: POST /mediciones
