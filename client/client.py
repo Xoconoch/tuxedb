@@ -179,6 +179,125 @@ def sync_from_remote(last_url):
     conn.commit()
     conn.close()
 
+def sync_last_five(mediciones_last_url, backend_url):
+    """
+    Enhanced synchronization:
+    
+    - Increase the number of remote entries requested (starting with 5 and increasing by 5)
+      until at least one common record is found between the local backup and remote DB.
+    - Once a common record is identified, determine the latest common entry.
+    - Compare both sides and sync the missing records (either push local updates to remote or
+      insert missing remote entries into the local backup) in chronological order.
+    - All operations are wrapped with try/except to ensure robustness in case of failures.
+    """
+    # Retrieve all local records ordered by timestamp ascending.
+    try:
+        conn = sqlite3.connect(BACKUP_DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext, synced FROM mediciones ORDER BY timestamp ASC")
+        local_records = c.fetchall()
+        conn.close()
+    except Exception as e:
+        print(f"Error al leer la base de datos local: {e}")
+        return
+    
+    # Build a set of local record IDs for quick lookup.
+    local_ids = {rec[0] for rec in local_records}
+    
+    # Increase the number of remote records (q) until a shared entry is found.
+    q = 5
+    max_q = 50  # Safety limit to prevent endless loops.
+    remote_records = []
+    shared_found = False
+    while q <= max_q:
+        try:
+            url = f"{mediciones_last_url}?q={q}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                remote_records = response.json()
+            else:
+                print(f"Error al obtener datos remotos con q={q}: {response.status_code} - {response.text}")
+                break
+        except Exception as e:
+            print(f"Excepción al obtener datos remotos con q={q}: {e}")
+            break
+        
+        if any(rec["id"] in local_ids for rec in remote_records):
+            shared_found = True
+            break
+        else:
+            print(f"No se encontró entrada compartida con q={q}. Incrementando la cantidad de registros remotos.")
+            q += 5
+
+    if not shared_found:
+        print("No se encontró ninguna entrada compartida entre el respaldo local y el remoto después de aumentar q. Sincronización omitida.")
+        return
+
+    # Determine the latest common entry between local and remote.
+    common_entries = [rec for rec in remote_records if rec["id"] in local_ids]
+    if not common_entries:
+        print("Error inesperado: se esperaba encontrar entradas compartidas, pero la lista está vacía.")
+        return
+    latest_common = max(common_entries, key=lambda r: datetime.fromisoformat(r["timestamp"]))
+    latest_common_time = datetime.fromisoformat(latest_common["timestamp"])
+    print(f"Última entrada común encontrada con timestamp: {latest_common_time}")
+
+    # Identify new entries (records with a timestamp after the latest common entry).
+    local_new = [rec for rec in local_records if datetime.fromisoformat(rec[1]) > latest_common_time]
+    remote_new = [rec for rec in remote_records if datetime.fromisoformat(rec["timestamp"]) > latest_common_time]
+
+    # Compute the latest timestamps in each group (using the common time as fallback).
+    local_last_time = max([datetime.fromisoformat(rec[1]) for rec in local_new], default=latest_common_time)
+    remote_last_time = max([datetime.fromisoformat(rec["timestamp"]) for rec in remote_new], default=latest_common_time)
+    
+    if remote_last_time > local_last_time:
+        print("La base de datos remota es más reciente después de la entrada común. Sincronizando entradas remotas faltantes en el respaldo local.")
+        remote_new_sorted = sorted(remote_new, key=lambda r: datetime.fromisoformat(r["timestamp"]))
+        try:
+            conn = sqlite3.connect(BACKUP_DB_PATH)
+            c = conn.cursor()
+            for rec in remote_new_sorted:
+                rec_id = rec["id"]
+                c.execute("SELECT 1 FROM mediciones WHERE id = ?", (rec_id,))
+                if not c.fetchone():
+                    try:
+                        print(f"Insertando registro remoto {rec_id} en el respaldo local.")
+                        c.execute('''
+                            INSERT INTO mediciones (id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext, synced)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (rec_id, rec["timestamp"], rec["temp_int"], rec["hum_int"],
+                              rec["ph"], rec["temp_ext"], rec["hum_ext"], 1))
+                    except Exception as e:
+                        print(f"Error al insertar el registro {rec_id}: {e}")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error al actualizar la base de datos local: {e}")
+    elif local_last_time > remote_last_time:
+        print("La base de datos local es más reciente después de la entrada común. Sincronizando entradas locales faltantes en el backend remoto.")
+        local_new_sorted = sorted(local_new, key=lambda rec: datetime.fromisoformat(rec[1]))
+        for rec in local_new_sorted:
+            data = {
+                "id": rec[0],
+                "timestamp": rec[1],
+                "temp_int": rec[2],
+                "hum_int": rec[3],
+                "ph": rec[4],
+                "temp_ext": rec[5],
+                "hum_ext": rec[6]
+            }
+            try:
+                response = requests.post(backend_url, json=data, timeout=5)
+                if response.status_code == 201:
+                    print(f"Registro local {rec[0]} sincronizado en el backend remoto.")
+                    mark_as_synced(rec[0])
+                else:
+                    print(f"Error sincronizando registro local {rec[0]}: {response.status_code} - {response.text}")
+            except Exception as e:
+                print(f"Excepción al sincronizar registro local {rec[0]}: {e}")
+    else:
+        print("Ambas bases de datos están sincronizadas después de la última entrada común.")
+
 def main():
     sleep_duration = float(os.getenv("SLEEP_DURATION", 1))
     init_local_backup_db()
@@ -242,8 +361,11 @@ def main():
                 print(f"Excepción al enviar la medición: {http_err}")
             
             sync_unsynced(backend_url)
-            # Se sincronizan las últimas 5 mediciones desde el endpoint /mediciones/last?q=5
+            # Se sincronizan las últimas 5 (o más, en función de la búsqueda) mediciones desde el endpoint /mediciones/last
             sync_from_remote(mediciones_last_url)
+            # Se comparan y sincronizan las entradas de ambas bases de datos en forma cronológica,
+            # usando la estrategia de "expandir" el número de registros remotos hasta encontrar una entrada compartida.
+            sync_last_five(mediciones_last_url, backend_url)
         except Exception as e:
             print(f"Error al leer los datos: {e}")
         
