@@ -14,7 +14,9 @@ This script connects to an SQLite database (default: ./mesocosmos.db), retrieves
   - Hypothesis 3: Assesses the relationship between internal and ambient humidity using
                   normality tests and an appropriate correlation (Pearson or Spearman).
   - Generates several graphs as PNG images.
-  - Generates a report (in Markdown format, saved as report.md) summarizing the analysis.
+  - Generates a report (in Markdown format) summarizing the analysis.
+
+All output (graphs and report) will be saved under the "./report" directory.
 
 Usage:
     python mesocosmos_analysis.py [--db PATH_TO_DB]
@@ -23,6 +25,7 @@ Author: Your Name
 Date: YYYY-MM-DD
 """
 
+import os
 import sqlite3
 import pandas as pd
 import sys
@@ -31,6 +34,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 from scipy import stats
+
+# Define the directory to store report and graphs
+OUTPUT_DIR = "./report"
+
+def ensure_output_dir(directory=OUTPUT_DIR):
+    """
+    Ensures the output directory exists.
+    """
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
 def load_data(db_path="./mesocosmos.db"):
     """
@@ -181,7 +194,7 @@ def hypothesis3_humidity_correlation(control_df, experimental_df):
 
 def generate_graphs(df, control_df, experimental_df, h3_results):
     """
-    Generates and saves graphical outputs for the analyses.
+    Generates and saves graphical outputs for the analyses under the OUTPUT_DIR.
     
     Hypothesis 1:
       - Time series plot of pH over the experiment duration with a line indicating the split.
@@ -194,6 +207,9 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
       - Scatter plots (with regression lines) showing the relationship between internal and ambient humidity
         for control and experimental groups.
     """
+    # Ensure output directory exists
+    ensure_output_dir()
+    
     # --- Hypothesis 1: pH Time Series and Boxplot ---
     # Time series plot for pH with a vertical line at the split (using the last timestamp of control group)
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -205,7 +221,7 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     ax.set_title("Time Series of pH with Control/Experimental Split")
     ax.legend()
     plt.tight_layout()
-    plt.savefig("hypothesis1_timeseries.png")
+    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis1_timeseries.png"))
     plt.close()
     
     # Boxplot of pH for control vs experimental
@@ -215,7 +231,7 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     ax.set_ylabel("pH")
     ax.set_title("Boxplot of Substrate pH by Group")
     plt.tight_layout()
-    plt.savefig("hypothesis1_boxplot.png")
+    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis1_boxplot.png"))
     plt.close()
     
     # --- Hypothesis 2: Side-by-Side Boxplots for Internal Conditions ---
@@ -232,7 +248,7 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     axs[1].set_ylabel("Humidity (%)")
     plt.suptitle("Boxplots of Internal Temperature and Humidity")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig("hypothesis2_boxplots.png")
+    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis2_boxplots.png"))
     plt.close()
     
     # --- Hypothesis 3: Scatter Plots for Humidity Correlation ---
@@ -255,7 +271,7 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
         ax.legend()
     plt.suptitle("Scatter Plot: Internal vs Ambient Humidity")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig("hypothesis3_scatter.png")
+    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis3_scatter.png"))
     plt.close()
 
 def generate_report(total_duration, total_records, control_df, experimental_df, h1_results, h2_results, h3_results):
@@ -266,8 +282,11 @@ def generate_report(total_duration, total_records, control_df, experimental_df, 
       - Results (statistics, test details, and conclusions) for each hypothesis.
       - References to the generated graphs.
       
-    The report is saved as 'report.md'.
+    The report is saved as 'report.md' under the OUTPUT_DIR.
     """
+    # Ensure output directory exists
+    ensure_output_dir()
+    
     report_lines = []
     report_lines.append("# Mesocosmos Experiment Analysis Report")
     report_lines.append("")
@@ -329,10 +348,11 @@ def generate_report(total_duration, total_records, control_df, experimental_df, 
     report_lines.append("**Graphical Outputs:**")
     report_lines.append("- Scatter Plots: `hypothesis3_scatter.png`")
     
-    # Write the report to a Markdown file
-    with open("report.md", "w") as f:
+    # Write the report to a Markdown file under OUTPUT_DIR
+    report_path = os.path.join(OUTPUT_DIR, "report.md")
+    with open(report_path, "w") as f:
         f.write("\n".join(report_lines))
-    print("Report generated and saved as report.md")
+    print(f"Report generated and saved as {report_path}")
 
 def main():
     # Parse command-line arguments (e.g., path to the SQLite database)
@@ -361,7 +381,7 @@ def main():
     # Generate and save the Markdown report
     generate_report(total_duration, total_records, control_df, experimental_df, h1_results, h2_results, h3_results)
     
-    print("Analysis complete.")
+    print("Analysis complete. All outputs are saved in the './report' directory.")
 
 if __name__ == "__main__":
     main()
