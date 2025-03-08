@@ -24,6 +24,19 @@ Usage:
 Author: Your Name
 Date: YYYY-MM-DD
 """
+import numba
+
+# Save the original njit decorator
+_original_njit = numba.njit
+
+# Define a new njit that forces caching to be disabled
+def no_cache_njit(*args, **kwargs):
+    kwargs['cache'] = False
+    return _original_njit(*args, **kwargs)
+
+# Override njit in the numba module
+numba.njit = no_cache_njit
+
 
 import os
 import sqlite3
@@ -34,7 +47,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 from scipy import stats
-
+import dcor  # New dependency for distance correlation
+from sklearn.feature_selection import mutual_info_regression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 # Define the directory to store report and graphs
 OUTPUT_DIR = "./report"
 
@@ -150,47 +167,69 @@ def hypothesis2_internal_conditions(control_df, experimental_df):
 
 def hypothesis3_humidity_correlation(control_df, experimental_df):
     """
-    Hypothesis 3 – Relationship Between Internal and Ambient Humidity:
-      - For each group (control and experimental), extracts internal (hum_int) and ambient (hum_ext) humidity.
-      - Assesses normality using the Shapiro–Wilk test.
-      - If both variables are normally distributed (p > 0.05), uses Pearson correlation;
-        otherwise, uses Spearman correlation.
-    Returns a dictionary with the correlation method, coefficient, and p-value for each group.
+    Enhanced Hypothesis 3 Analysis:
+    Performs comprehensive linear and non-linear correlation analysis between
+    internal and ambient humidity for both groups.
     """
     results = {}
     for group_name, df_group in zip(["control", "experimental"], [control_df, experimental_df]):
-        # Drop any rows with missing values in hum_int or hum_ext
         paired = df_group[['hum_int', 'hum_ext']].dropna()
+        if len(paired) < 3:  # Minimum for meaningful analysis
+            results[group_name] = {"error": "Insufficient data"}
+            continue
+            
         hum_int = paired['hum_int']
         hum_ext = paired['hum_ext']
         
-        # Normality tests (Shapiro-Wilk)
+        # Basic statistics
+        stats_results = {
+            "n_samples": len(paired),
+            "hum_int_mean": hum_int.mean(),
+            "hum_ext_mean": hum_ext.mean()
+        }
+        
+        # Traditional correlation analysis
         try:
             shapiro_int = stats.shapiro(hum_int)
-        except Exception as e:
-            shapiro_int = (None, None)
-        try:
             shapiro_ext = stats.shapiro(hum_ext)
+            normality = shapiro_int[1] > 0.05 and shapiro_ext[1] > 0.05
         except Exception as e:
-            shapiro_ext = (None, None)
-        
-        # Choose correlation method based on normality
-        if shapiro_int[1] is not None and shapiro_ext[1] is not None and shapiro_int[1] > 0.05 and shapiro_ext[1] > 0.05:
+            normality = False
+            
+        if normality:
             corr_method = "Pearson"
             corr_coef, p_val = stats.pearsonr(hum_int, hum_ext)
         else:
             corr_method = "Spearman"
             corr_coef, p_val = stats.spearmanr(hum_int, hum_ext)
         
+        # Non-linear correlation metrics
+        distance_corr = dcor.distance_correlation(hum_int, hum_ext)
+        mi = mutual_info_regression(hum_ext.values.reshape(-1, 1), hum_int.values)[0]
+        
+        # Polynomial regression analysis
+        poly = PolynomialFeatures(degree=2)
+        X_poly = poly.fit_transform(hum_ext.values.reshape(-1, 1))
+        model = LinearRegression().fit(X_poly, hum_int)
+        poly_r2 = r2_score(hum_int, model.predict(X_poly))
+        
         results[group_name] = {
-            "corr_method": corr_method,
-            "corr_coef": corr_coef,
-            "p_val": p_val,
-            "shapiro_hum_int": shapiro_int,
-            "shapiro_hum_ext": shapiro_ext
+            **stats_results,
+            "linear_analysis": {
+                "method": corr_method,
+                "coef": corr_coef,
+                "p_value": p_val,
+                "normality_test": (shapiro_int[1], shapiro_ext[1])
+            },
+            "non_linear_analysis": {
+                "distance_correlation": distance_corr,
+                "mutual_information": mi,
+                "polynomial_r2": poly_r2
+            }
         }
     
     return results
+
 
 def generate_graphs(df, control_df, experimental_df, h3_results):
     """
@@ -250,28 +289,47 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis2_boxplots.png"))
     plt.close()
-    
-    # --- Hypothesis 3: Scatter Plots for Humidity Correlation ---
-    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+    # --- Enhanced Hypothesis 3 Visualizations ---
+    plt.figure(figsize=(12, 6))
     groups = {'Control': control_df, 'Experimental': experimental_df}
-    for ax, (group_name, group_df) in zip(axs, groups.items()):
+    
+    for idx, (group_name, group_df) in enumerate(groups.items(), 1):
         paired = group_df[['hum_int', 'hum_ext']].dropna()
+        if len(paired) < 3:
+            continue
+            
         x = paired['hum_ext']
         y = paired['hum_int']
-        ax.scatter(x, y, label=group_name, color='green')
-        # Add regression line if there is enough data
-        if len(x) > 1:
-            slope, intercept, r_value, p_val, std_err = stats.linregress(x, y)
-            x_vals = np.array([x.min(), x.max()])
-            y_vals = intercept + slope * x_vals
-            ax.plot(x_vals, y_vals, color='red', linestyle='--', label='Regression line')
-        ax.set_xlabel("Ambient Humidity")
-        ax.set_ylabel("Internal Humidity")
-        ax.set_title(f"{group_name} Group")
-        ax.legend()
-    plt.suptitle("Scatter Plot: Internal vs Ambient Humidity")
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis3_scatter.png"))
+        
+        # Main scatter plot with polynomial fit
+        plt.subplot(2, 2, idx)
+        plt.scatter(x, y, alpha=0.6)
+        
+        # Polynomial regression line
+        poly = PolynomialFeatures(degree=2)
+        X_poly = poly.fit_transform(x.values.reshape(-1, 1))
+        model = LinearRegression().fit(X_poly, y)
+        x_vals = np.linspace(x.min(), x.max(), 100)
+        y_vals = model.predict(poly.transform(x_vals.reshape(-1, 1)))
+        plt.plot(x_vals, y_vals, 'r--', label='Quadratic Fit')
+        
+        plt.xlabel('Ambient Humidity')
+        plt.ylabel('Internal Humidity')
+        plt.title(f'{group_name} Group\nDistance Corr: {h3_results[group_name.lower()]["non_linear_analysis"]["distance_correlation"]:.2f}')
+        plt.legend()
+
+        # Residual plot
+        plt.subplot(2, 2, idx+2)
+        residuals = y - model.predict(X_poly)
+        plt.scatter(x, residuals, alpha=0.6)
+        plt.axhline(0, color='red', linestyle='--')
+        plt.xlabel('Ambient Humidity')
+        plt.ylabel('Residuals')
+        plt.title('Residual Analysis')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis3_analysis.png"))
     plt.close()
 
 def generate_report(total_duration, total_records, control_df, experimental_df, h1_results, h2_results, h3_results):
@@ -331,28 +389,47 @@ def generate_report(total_duration, total_records, control_df, experimental_df, 
     report_lines.append("**Graphical Outputs:**")
     report_lines.append("- Boxplots for Internal Conditions: `hypothesis2_boxplots.png`")
     report_lines.append("")
+
+    # Enhanced Hypothesis 3 section
+    report_lines.append("## Hypothesis 3 – Humidity Relationship Analysis")
+    report_lines.append("### Comprehensive Linear and Non-Linear Analysis")
     
-    # Hypothesis 3
-    report_lines.append("## Hypothesis 3 – Relationship Between Internal and Ambient Humidity")
     for group in ['control', 'experimental']:
         res = h3_results[group]
-        report_lines.append(f"### {group.capitalize()} Group")
-        report_lines.append(f"- **Correlation Method:** {res['corr_method']}")
-        report_lines.append(f"- **Correlation Coefficient:** {res['corr_coef']:.3f}")
-        report_lines.append(f"- **p-value:** {res['p_val']:.3f}")
-        if res['p_val'] < 0.05:
-            report_lines.append("- **Interpretation:** The relationship is statistically significant.")
+        if 'error' in res:
+            report_lines.append(f"**{group.capitalize()} Group:** {res['error']}")
+            continue
+            
+        report_lines.append(f"### {group.capitalize()} Group (n={res['n_samples']})")
+        report_lines.append("- **Linear Analysis:**")
+        report_lines.append(f"  - Method: {res['linear_analysis']['method']}")
+        report_lines.append(f"  - Coefficient: {res['linear_analysis']['coef']:.2f}")
+        report_lines.append(f"  - p-value: {res['linear_analysis']['p_value']:.3f}")
+        
+        report_lines.append("- **Non-Linear Analysis:**")
+        report_lines.append(f"  - Distance Correlation: {res['non_linear_analysis']['distance_correlation']:.2f}")
+        report_lines.append(f"  - Mutual Information: {res['non_linear_analysis']['mutual_information']:.2f}")
+        report_lines.append(f"  - Polynomial R²: {res['non_linear_analysis']['polynomial_r2']:.2f}")
+        
+        report_lines.append("- **Interpretation:**")
+        if res['non_linear_analysis']['distance_correlation'] > 0.5:
+            report_lines.append("  - Strong non-linear relationship detected")
+        elif res['non_linear_analysis']['distance_correlation'] > 0.3:
+            report_lines.append("  - Moderate non-linear relationship detected")
         else:
-            report_lines.append("- **Interpretation:** The relationship is not statistically significant.")
+            report_lines.append("  - Weak non-linear relationship")
+        
         report_lines.append("")
+
     report_lines.append("**Graphical Outputs:**")
-    report_lines.append("- Scatter Plots: `hypothesis3_scatter.png`")
-    
-    # Write the report to a Markdown file under OUTPUT_DIR
-    report_path = os.path.join(OUTPUT_DIR, "report.md")
-    with open(report_path, "w") as f:
-        f.write("\n".join(report_lines))
-    print(f"Report generated and saved as {report_path}")
+    report_lines.append("- Comprehensive Analysis: `hypothesis3_analysis.png`")
+
+    report_content = "\n".join(report_lines)
+    try:
+        with open(os.path.join(OUTPUT_DIR, "report.md"), "w") as report_file:
+            report_file.write(report_content)
+    except Exception as e:
+        print(f"Error writing report file: {e}")
 
 def main():
     # Parse command-line arguments (e.g., path to the SQLite database)
