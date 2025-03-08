@@ -1,8 +1,6 @@
 /__pycache__
-/analisis
 /instance
 /test.py
 /venv
 db/
-
 client/backup/backup.db
