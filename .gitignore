@@ -4,3 +4,4 @@
 /venv
 db/
 client/backup/backup.db
+/analisis/report
