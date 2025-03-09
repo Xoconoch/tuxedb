@@ -12,7 +12,7 @@ This script connects to an SQLite database (default: ./mesocosmos.db), retrieves
   - Hypothesis 1: Compares substrate pH between groups using an independent t-test.
   - Hypothesis 2: Compares internal temperature and humidity between groups via separate t-tests.
   - Hypothesis 3: Assesses the relationship between internal and ambient humidity using
-                  normality tests and an appropriate correlation (Pearson or Spearman).
+                  normality tests, correlation analysis, and an iterative polynomial approximation.
   - Generates several graphs as PNG images.
   - Generates a report (in Markdown format) summarizing the analysis.
 
@@ -167,14 +167,16 @@ def hypothesis2_internal_conditions(control_df, experimental_df):
 
 def hypothesis3_humidity_correlation(control_df, experimental_df):
     """
-    Enhanced Hypothesis 3 Analysis:
-    Performs comprehensive linear and non-linear correlation analysis between
-    internal and ambient humidity for both groups.
+    Enhanced Hypothesis 3 Analysis with iterative polynomial degree improvement:
+    - Starts with a baseline polynomial degree (1) and increases the degree iteratively.
+    - At each step, computes the R² score of the polynomial regression.
+    - The iteration stops when the relative improvement in R² is less than 1%.
+    - Also computes traditional linear correlation metrics, distance correlation, and mutual information.
     """
     results = {}
     for group_name, df_group in zip(["control", "experimental"], [control_df, experimental_df]):
         paired = df_group[['hum_int', 'hum_ext']].dropna()
-        if len(paired) < 3:  # Minimum for meaningful analysis
+        if len(paired) < 3:
             results[group_name] = {"error": "Insufficient data"}
             continue
             
@@ -207,11 +209,30 @@ def hypothesis3_humidity_correlation(control_df, experimental_df):
         distance_corr = dcor.distance_correlation(hum_int, hum_ext)
         mi = mutual_info_regression(hum_ext.values.reshape(-1, 1), hum_int.values)[0]
         
-        # Polynomial regression analysis
-        poly = PolynomialFeatures(degree=2)
+        # Polynomial degree iterative improvement
+        initial_degree = 1
+        poly = PolynomialFeatures(degree=initial_degree)
         X_poly = poly.fit_transform(hum_ext.values.reshape(-1, 1))
         model = LinearRegression().fit(X_poly, hum_int)
-        poly_r2 = r2_score(hum_int, model.predict(X_poly))
+        best_r2 = r2_score(hum_int, model.predict(X_poly))
+        best_degree = initial_degree
+        best_model = model
+        
+        next_degree = initial_degree + 1
+        max_degree = 10  # maximum degree to consider
+        while next_degree <= max_degree:
+            poly = PolynomialFeatures(degree=next_degree)
+            X_poly = poly.fit_transform(hum_ext.values.reshape(-1, 1))
+            model = LinearRegression().fit(X_poly, hum_int)
+            current_r2 = r2_score(hum_int, model.predict(X_poly))
+            # Calculate relative improvement in R²
+            improvement = (current_r2 - best_r2) / best_r2 if best_r2 != 0 else np.inf
+            if improvement < 0.000000000000001:  # less than 1% improvement: stop iterating
+                break
+            best_r2 = current_r2
+            best_degree = next_degree
+            best_model = model
+            next_degree += 1
         
         results[group_name] = {
             **stats_results,
@@ -224,12 +245,13 @@ def hypothesis3_humidity_correlation(control_df, experimental_df):
             "non_linear_analysis": {
                 "distance_correlation": distance_corr,
                 "mutual_information": mi,
-                "polynomial_r2": poly_r2
+                "best_poly_degree": best_degree,
+                "best_poly_r2": best_r2,
+                "polynomial_model": best_model
             }
         }
     
     return results
-
 
 def generate_graphs(df, control_df, experimental_df, h3_results):
     """
@@ -250,7 +272,6 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     ensure_output_dir()
     
     # --- Hypothesis 1: pH Time Series and Boxplot ---
-    # Time series plot for pH with a vertical line at the split (using the last timestamp of control group)
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(df['timestamp'], df['ph'], label='pH', color='blue')
     midpoint = control_df['timestamp'].iloc[-1]
@@ -263,7 +284,6 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis1_timeseries.png"))
     plt.close()
     
-    # Boxplot of pH for control vs experimental
     fig, ax = plt.subplots(figsize=(8, 6))
     data_to_plot = [control_df['ph'].dropna(), experimental_df['ph'].dropna()]
     ax.boxplot(data_to_plot, labels=['Control', 'Experimental'])
@@ -275,12 +295,10 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     
     # --- Hypothesis 2: Side-by-Side Boxplots for Internal Conditions ---
     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-    # Boxplot for internal temperature
     axs[0].boxplot([control_df['temp_int'].dropna(), experimental_df['temp_int'].dropna()],
                    labels=['Control', 'Experimental'])
     axs[0].set_title("Internal Temperature")
     axs[0].set_ylabel("Temperature (°C)")
-    # Boxplot for internal humidity
     axs[1].boxplot([control_df['hum_int'].dropna(), experimental_df['hum_int'].dropna()],
                    labels=['Control', 'Experimental'])
     axs[1].set_title("Internal Humidity")
@@ -302,35 +320,32 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
         x = paired['hum_ext']
         y = paired['hum_int']
         
-        # Main scatter plot with polynomial fit
+        # Main scatter plot with best polynomial fit
         plt.subplot(2, 2, idx)
         plt.scatter(x, y, alpha=0.6)
-        
-        # Polynomial regression line
-        poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(x.values.reshape(-1, 1))
-        model = LinearRegression().fit(X_poly, y)
+        # Retrieve best polynomial degree and model from hypothesis3 results
+        best_degree = h3_results[group_name.lower()]["non_linear_analysis"]["best_poly_degree"]
+        poly = PolynomialFeatures(degree=best_degree)
+        poly.fit(x.values.reshape(-1, 1))
+        best_model = h3_results[group_name.lower()]["non_linear_analysis"]["polynomial_model"]
         x_vals = np.linspace(x.min(), x.max(), 100)
-        y_vals = model.predict(poly.transform(x_vals.reshape(-1, 1)))
-        plt.plot(x_vals, y_vals, 'r--', label='Quadratic Fit')
-        
-        plt.xlabel('Ambient Humidity')
-        plt.ylabel('Internal Humidity')
-        plt.title(f'{group_name} Group\nDistance Corr: {h3_results[group_name.lower()]["non_linear_analysis"]["distance_correlation"]:.2f}')
-        plt.legend()
+        y_vals = best_model.predict(poly.transform(x_vals.reshape(-1, 1)))
+        plt.plot(x_vals, y_vals, 'r--', label=f'Poly Degree {best_degree} Fit')
 
-        # Residual plot
+        # Residual plot using the fitted poly transformer
         plt.subplot(2, 2, idx+2)
-        residuals = y - model.predict(X_poly)
+        X_poly = poly.transform(x.values.reshape(-1, 1))
+        residuals = y - best_model.predict(X_poly)
         plt.scatter(x, residuals, alpha=0.6)
         plt.axhline(0, color='red', linestyle='--')
         plt.xlabel('Ambient Humidity')
         plt.ylabel('Residuals')
         plt.title('Residual Analysis')
-
+            
     plt.tight_layout()
     plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis3_analysis.png"))
     plt.close()
+
 
 def generate_report(total_duration, total_records, control_df, experimental_df, h1_results, h2_results, h3_results):
     """
@@ -390,7 +405,7 @@ def generate_report(total_duration, total_records, control_df, experimental_df, 
     report_lines.append("- Boxplots for Internal Conditions: `hypothesis2_boxplots.png`")
     report_lines.append("")
 
-    # Enhanced Hypothesis 3 section
+    # --- Modified Hypothesis 3 Section ---
     report_lines.append("## Hypothesis 3 – Humidity Relationship Analysis")
     report_lines.append("### Comprehensive Linear and Non-Linear Analysis")
     
@@ -409,7 +424,8 @@ def generate_report(total_duration, total_records, control_df, experimental_df, 
         report_lines.append("- **Non-Linear Analysis:**")
         report_lines.append(f"  - Distance Correlation: {res['non_linear_analysis']['distance_correlation']:.2f}")
         report_lines.append(f"  - Mutual Information: {res['non_linear_analysis']['mutual_information']:.2f}")
-        report_lines.append(f"  - Polynomial R²: {res['non_linear_analysis']['polynomial_r2']:.2f}")
+        report_lines.append(f"  - Optimal Polynomial Degree: {res['non_linear_analysis']['best_poly_degree']}")
+        report_lines.append(f"  - Best R² Score: {res['non_linear_analysis']['best_poly_r2']:.2f}")
         
         report_lines.append("- **Interpretation:**")
         if res['non_linear_analysis']['distance_correlation'] > 0.5:
