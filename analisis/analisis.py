@@ -207,8 +207,8 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
         paired = grp[['hum_int','hum_ext']].dropna()
         if len(paired) < 3: continue
         x, y = paired['hum_ext'], paired['hum_int']
-        deg = h3_results[label.lower()]['non_linear_analysis']['best_degree']
-        model = h3_results[label.lower()]['non_linear_analysis']['model']
+        deg = h3_results[label.lower()]['non_linear']['best_degree']
+        model = h3_results[label.lower()]['non_linear']['model']
         poly = PolynomialFeatures(degree=deg)
         Xp = poly.fit_transform(x.values.reshape(-1,1))
         plt.subplot(2,2,i)
@@ -230,45 +230,6 @@ def generate_graphs(df, control_df, experimental_df, h3_results):
     plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis3_analisis.png'))
     plt.close()
 
-def generate_report(duration, total, ctrl, exp, h1, h2, h3):
-    ensure_output_dir()
-    lines = [
-        '# Informe de Análisis del Experimento Mesocosmos',
-        '',
-        '## Resumen del Experimento',
-        f'- **Duración:** {duration}',
-        f'- **Total de registros:** {total}',
-        f'- **Fecha de corte:** {SPLIT_TIMESTAMP}',
-        f'- **Registros (Abierto):** {len(ctrl)}',
-        f'- **Registros (Sellado):** {len(exp)}',
-        '',
-        '## Hipótesis 1 – pH del Sustrato',
-        '',
-        '| Periodo | pH medio | t | p | Conclusión |',
-        '|:-------:|:--------:|:-:|:-:|:----------:|',
-        f'| Abierto | {h1["mean_control"]:.3f} | {h1["t_stat"]:.3f} | {h1["p_val"]:.3f} | {h1["conclusion"]} |',
-        f'| Sellado | {h1["mean_experimental"]:.3f} |  |  |  |',
-        '',
-        '## Hipótesis 2 – Condiciones Internas',
-        '',
-        '| Variable            | Periodo | Media   | t        | p       | Conclusión             |',
-        '|:-------------------:|:-------:|:-------:|:--------:|:-------:|:----------------------:|',
-        f'| Temperatura interna | Abierto | {h2["temp_int"]["mean_control"]:.3f} | {h2["temp_int"]["t_stat"]:.3f} | {h2["temp_int"]["p_val"]:.3f} | {h2["temp_int"]["conclusion"]} |',
-        f'| Temperatura interna | Sellado | {h2["temp_int"]["mean_experimental"]:.3f} |  |  |  |',
-        f'| Humedad interna     | Abierto | {h2["hum_int"]["mean_control"]:.3f} | {h2["hum_int"]["t_stat"]:.3f} | {h2["hum_int"]["p_val"]:.3f} | {h2["hum_int"]["conclusion"]} |',
-        f'| Humedad interna     | Sellado | {h2["hum_int"]["mean_experimental"]:.3f} |  |  |  |',
-        '',
-        '## Hipótesis 3 – Relación Humedad Interna vs Ambiental',
-        '',
-        '| Periodo  | ρ (Spearman) | p (ρ)    | Dist. Corr. | Mutual Info | Mejor grado | R²   |',
-        '|:--------:|:------------:|:--------:|:-----------:|:-----------:|:-----------:|:----:|',
-        f'| Abierto  | {h3["abierto"]["linear"]["coef"]:.2f}       | {h3["abierto"]["linear"]["p_val"]:.3f} | {h3["abierto"]["non_linear"]["dist_corr"]:.2f}      | {h3["abierto"]["non_linear"]["mutual_info"]:.2f}      | {h3["abierto"]["non_linear"]["best_degree"]}           | {h3["abierto"]["non_linear"]["best_r2"]:.2f} |',
-        f'| Sellado  | {h3["sellado"]["linear"]["coef"]:.2f}       | {h3["sellado"]["linear"]["p_val"]:.3f} | {h3["sellado"]["non_linear"]["dist_corr"]:.2f}      | {h3["sellado"]["non_linear"]["mutual_info"]:.2f}      | {h3["sellado"]["non_linear"]["best_degree"]}           | {h3["sellado"]["non_linear"]["best_r2"]:.2f} |',
-        '',
-        '**Gráficos:** hipotesis1_tiempo.png, hipotesis1_caja.png, hipotesis2_cajas.png, hipotesis3_analisis.png'
-    ]
-    with open(os.path.join(OUTPUT_DIR, 'reporte.md'), 'w') as f:
-        f.write('\n'.join(lines))
 
 def main():
     parser = argparse.ArgumentParser(description='Script de Análisis del Experimento Mesocosmos')
