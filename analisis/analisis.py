@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script de Análisis del Experimento Mesocosmos
+Script de Análisis del Experimento Mesocosmos.
 
 Este script se conecta a una base de datos SQLite (por defecto: ./mesocosmos.db), obtiene datos de la
 tabla "medicion" y realiza lo siguiente:
