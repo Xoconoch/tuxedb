@@ -163,10 +163,72 @@ def hypothesis3_humidity_correlation(control_df, experimental_df):
         }
     return results
 
-def generate_graphs(df, control_df, experimental_df, h3):
+def generate_graphs(df, control_df, experimental_df, h3_results):
     ensure_output_dir()
-    # (idéntico al original para generar figuras)
-    # ...
+    # Divisor fijo en gráficos
+    split_time = SPLIT_TIMESTAMP
+    # Hipótesis 1
+    fig, ax = plt.subplots(figsize=(10,6))
+    ax.plot(df['timestamp'], df['ph'], label='pH')
+    ax.axvline(split_time, color='red', linestyle='--', label='Fecha de corte')
+    ax.set_xlabel('Fecha y hora')
+    ax.set_ylabel('pH')
+    ax.set_title('Serie de tiempo: pH del sustrato')
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis1_tiempo.png'))
+    plt.close()
+
+    fig, ax = plt.subplots(figsize=(8,6))
+    ax.boxplot([control_df['ph'].dropna(), experimental_df['ph'].dropna()],
+               labels=['Abierto','Sellado'])
+    ax.set_ylabel('pH')
+    ax.set_title('pH del sustrato por periodo')
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis1_caja.png'))
+    plt.close()
+
+    # Hipótesis 2
+    fig, axes = plt.subplots(1,2, figsize=(12,6))
+    axes[0].boxplot([control_df['temp_int'].dropna(), experimental_df['temp_int'].dropna()],
+                    labels=['Abierto','Sellado'])
+    axes[0].set_title('Temperatura interna (°C)')
+    axes[1].boxplot([control_df['hum_int'].dropna(), experimental_df['hum_int'].dropna()],
+                    labels=['Abierto','Sellado'])
+    axes[1].set_title('Humedad interna (%)')
+    plt.suptitle('Comparativa de condiciones internas')
+    plt.tight_layout(rect=[0,0,1,0.95])
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis2_cajas.png'))
+    plt.close()
+
+    # Hipótesis 3
+    plt.figure(figsize=(12,6))
+    for i, (label, grp) in enumerate([('Abierto', control_df), ('Sellado', experimental_df)], start=1):
+        paired = grp[['hum_int','hum_ext']].dropna()
+        if len(paired) < 3: continue
+        x, y = paired['hum_ext'], paired['hum_int']
+        deg = h3_results[label.lower()]['non_linear_analysis']['best_degree']
+        model = h3_results[label.lower()]['non_linear_analysis']['model']
+        poly = PolynomialFeatures(degree=deg)
+        Xp = poly.fit_transform(x.values.reshape(-1,1))
+        plt.subplot(2,2,i)
+        plt.scatter(x, y, alpha=0.6)
+        xs = np.linspace(x.min(), x.max(), 100)
+        ys = model.predict(poly.transform(xs.reshape(-1,1)))
+        plt.plot(xs, ys, linestyle='--')
+        plt.xlabel('Humedad ambiental (%)')
+        plt.ylabel('Humedad interna (%)')
+        plt.title(f'{label}: Ajuste polinómico (grado {deg})')
+        plt.subplot(2,2,i+2)
+        res = y - model.predict(Xp)
+        plt.scatter(x, res, alpha=0.6)
+        plt.axhline(0, linestyle='--')
+        plt.xlabel('Hum. ambiental (%)')
+        plt.ylabel('Residuos')
+        plt.title(f'{label}: Residuos')
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis3_analisis.png'))
+    plt.close()
 
 def generate_report(duration, total, ctrl, exp, h1, h2, h3):
     ensure_output_dir()
