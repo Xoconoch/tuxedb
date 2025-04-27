@@ -1,42 +1,35 @@
 #!/usr/bin/env python3
 """
-Mesocosmos Experiment Analysis Script
+Script de Análisis del Experimento Mesocosmos
 
-This script connects to an SQLite database (default: ./mesocosmos.db), retrieves data from the
-"medicion" table, and performs the following tasks:
-  - Orders the data chronologically by the timestamp column.
-  - Determines the total duration of the experiment (using the first and last timestamps).
-  - Splits the data into two halves:
-       Control Group: Mesocosmos open (first half)
-       Experimental Group: Mesocosmos sealed (second half)
-  - Hypothesis 1: Compares substrate pH between groups using an independent t-test.
-  - Hypothesis 2: Compares internal temperature and humidity between groups via separate t-tests.
-  - Hypothesis 3: Assesses the relationship between internal and ambient humidity using
-                  normality tests, correlation analysis, and an iterative polynomial approximation.
-  - Generates several graphs as PNG images.
-  - Generates a report (in Markdown format) summarizing the analysis.
+Este script se conecta a una base de datos SQLite (por defecto: ./mesocosmos.db), obtiene datos de la
+tabla "medicion" y realiza lo siguiente:
+  - Ordena los datos cronológicamente según la columna `timestamp`.
+  - Determina la duración total del experimento (usando los timestamps inicial y final).
+  - Divide los datos en dos periodos basados en una fecha fija (2025-04-02 09:00:23):
+       Grupo Abierto (control): Mesocosmos abierto (registros hasta y incluyendo la fecha de corte)
+       Grupo Sellado (experimental): Mesocosmos sellado (registros posteriores a la fecha de corte)
+  - Hipótesis 1: Compara el pH del sustrato entre periodos mediante prueba t-independiente de Welch.
+  - Hipótesis 2: Compara la temperatura y la humedad internas entre periodos mediante pruebas t-independientes.
+  - Hipótesis 3: Evalúa la relación entre la humedad interna y ambiental usando:
+      * Prueba de normalidad Shapiro-Wilk.
+      * Correlación Pearson o Spearman.
+      * Distance correlation y mutual information.
+      * Ajuste polinómico iterativo, deteniéndose cuando la mejora en R² sea menor al 1 %.
+  - Genera gráficos en PNG y un informe en Markdown bajo el directorio "./report".
 
-All output (graphs and report) will be saved under the "./report" directory.
-
-Usage:
-    python mesocosmos_analysis.py [--db PATH_TO_DB]
-
-Author: Your Name
-Date: YYYY-MM-DD
+Uso:
+    python mesocosmos_analysis.py [--db RUTA_A_DB]
 """
 import numba
 
-# Save the original njit decorator
+# Desactivar caché en numba para evitar inconsistencias
 _original_njit = numba.njit
 
-# Define a new njit that forces caching to be disabled
 def no_cache_njit(*args, **kwargs):
     kwargs['cache'] = False
     return _original_njit(*args, **kwargs)
-
-# Override njit in the numba module
 numba.njit = no_cache_njit
-
 
 import os
 import sqlite3
@@ -45,436 +38,287 @@ import sys
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime
 from scipy import stats
-import dcor  # New dependency for distance correlation
+import dcor  # Para distance correlation
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
-# Define the directory to store report and graphs
+
 OUTPUT_DIR = "./report"
+# Fecha fija para dividir los periodos
+SPLIT_TIMESTAMP = pd.to_datetime("2025-04-02 09:00:23.726423")
 
 def ensure_output_dir(directory=OUTPUT_DIR):
-    """
-    Ensures the output directory exists.
-    """
+    """Crea el directorio de salida si no existe."""
     if not os.path.exists(directory):
         os.makedirs(directory)
 
 def load_data(db_path="./mesocosmos.db"):
     """
-    Connects to the SQLite database and loads the 'medicion' table into a pandas DataFrame.
-    The DataFrame is sorted chronologically based on the 'timestamp' column.
+    Carga la tabla "medicion" desde la base SQLite y ordena por timestamp.
     """
     try:
         conn = sqlite3.connect(db_path)
-        query = "SELECT id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext FROM medicion"
+        query = (
+            "SELECT id, timestamp, temp_int, hum_int, ph, temp_ext, hum_ext "
+            "FROM medicion"
+        )
         df = pd.read_sql_query(query, conn)
         conn.close()
     except Exception as e:
-        print("Error connecting to database or retrieving data:", e)
+        print("Error al conectar o leer la base de datos:", e)
         sys.exit(1)
-    
     try:
-        # Convert timestamp column to datetime and sort chronologically
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.sort_values('timestamp', inplace=True)
     except Exception as e:
-        print("Error processing timestamps:", e)
+        print("Error al procesar timestamps:", e)
         sys.exit(1)
-    
     return df
 
 def split_data(df):
     """
-    Splits the DataFrame into two halves based on the experiment duration.
-    The midpoint (by time) is used to separate:
-      - control_df: records up to and including the midpoint (mesocosmos open)
-      - experimental_df: records after the midpoint (mesocosmos sealed)
-    Returns both subsets along with the start and end times.
+    Separa el DataFrame usando la fecha fija SPLIT_TIMESTAMP.
+    Registra advertencia si SPLIT_TIMESTAMP está fuera del rango de datos.
     """
-    start_time = df['timestamp'].iloc[0]
-    end_time = df['timestamp'].iloc[-1]
-    midpoint = start_time + (end_time - start_time) / 2
-
-    control_df = df[df['timestamp'] <= midpoint]
-    experimental_df = df[df['timestamp'] > midpoint]
-    
-    return control_df, experimental_df, start_time, end_time
+    inicio = df['timestamp'].iloc[0]
+    fin = df['timestamp'].iloc[-1]
+    if SPLIT_TIMESTAMP < inicio or SPLIT_TIMESTAMP > fin:
+        print(f"Advertencia: la fecha de corte {SPLIT_TIMESTAMP} está fuera del rango de datos ({inicio} - {fin}).")
+    control_df = df[df['timestamp'] <= SPLIT_TIMESTAMP]
+    experimental_df = df[df['timestamp'] > SPLIT_TIMESTAMP]
+    return control_df, experimental_df, inicio, fin
 
 def hypothesis1_ph(control_df, experimental_df):
     """
-    Hypothesis 1 – Variations in Substrate pH:
-      - Computes the mean substrate pH for both control and experimental groups.
-      - Applies an independent t-test (using Welch’s correction) to compare the means.
-      - Null Hypothesis (H₀): Mean pH in control equals mean pH in experimental.
-    Returns a dictionary with the computed means, t-test statistic, p-value, and conclusion.
+    Hipótesis 1 – Variaciones en el pH del sustrato:
+      H₀: pH medio (abierto) = pH medio (sellado).
+      Prueba t-independiente de Welch.
     """
-    mean_ph_control = control_df['ph'].mean()
-    mean_ph_experimental = experimental_df['ph'].mean()
-    
-    # Perform independent t-test (Welch's t-test)
-    t_stat, p_val = stats.ttest_ind(control_df['ph'].dropna(), experimental_df['ph'].dropna(), equal_var=False)
-    conclusion = "Reject H₀ (significant difference)" if p_val < 0.05 else "Fail to reject H₀ (no significant difference)"
-    
-    return {
-        "mean_ph_control": mean_ph_control,
-        "mean_ph_experimental": mean_ph_experimental,
-        "t_stat": t_stat,
-        "p_val": p_val,
-        "conclusion": conclusion
-    }
+    mean_control = control_df['ph'].mean()
+    mean_experimental = experimental_df['ph'].mean()
+    t_stat, p_val = stats.ttest_ind(
+        control_df['ph'].dropna(),
+        experimental_df['ph'].dropna(),
+        equal_var=False
+    )
+    conclusion = (
+        "Rechazar H₀ (diferencia significativa)" 
+        if p_val < 0.05 else
+        "No rechazar H₀ (sin diferencia significativa)"
+    )
+    return {'mean_control': mean_control, 'mean_experimental': mean_experimental,
+            't_stat': t_stat, 'p_val': p_val, 'conclusion': conclusion}
 
 def hypothesis2_internal_conditions(control_df, experimental_df):
     """
-    Hypothesis 2 – Influence of Ambient Temperature on Internal Conditions:
-      - For internal temperature (temp_int) and internal humidity (hum_int), computes the mean values
-        for control and experimental groups.
-      - Performs separate independent t-tests.
-      - Null Hypothesis (H₀): The means for the two groups are equal.
-    Returns a dictionary with results for both comparisons.
+    Hipótesis 2 – Condiciones internas (temperatura y humedad):
+      H₀: medias iguales entre periodos.
     """
     results = {}
-    
-    # Internal Temperature comparison
-    temp_control = control_df['temp_int'].dropna()
-    temp_experimental = experimental_df['temp_int'].dropna()
-    t_stat_temp, p_val_temp = stats.ttest_ind(temp_control, temp_experimental, equal_var=False)
-    conclusion_temp = "Reject H₀ (significant difference)" if p_val_temp < 0.05 else "Fail to reject H₀ (no significant difference)"
-    results['temp_int'] = {
-        "mean_control": temp_control.mean(),
-        "mean_experimental": temp_experimental.mean(),
-        "t_stat": t_stat_temp,
-        "p_val": p_val_temp,
-        "conclusion": conclusion_temp
-    }
-    
-    # Internal Humidity comparison
-    hum_control = control_df['hum_int'].dropna()
-    hum_experimental = experimental_df['hum_int'].dropna()
-    t_stat_hum, p_val_hum = stats.ttest_ind(hum_control, hum_experimental, equal_var=False)
-    conclusion_hum = "Reject H₀ (significant difference)" if p_val_hum < 0.05 else "Fail to reject H₀ (no significant difference)"
-    results['hum_int'] = {
-        "mean_control": hum_control.mean(),
-        "mean_experimental": hum_experimental.mean(),
-        "t_stat": t_stat_hum,
-        "p_val": p_val_hum,
-        "conclusion": conclusion_hum
-    }
-    
+    for var, label in [('temp_int', 'Temperatura interna'), ('hum_int', 'Humedad interna')]:
+        data_c = control_df[var].dropna()
+        data_e = experimental_df[var].dropna()
+        t_stat, p_val = stats.ttest_ind(data_c, data_e, equal_var=False)
+        conclusion = (
+            "Rechazar H₀ (diferencia significativa)" 
+            if p_val < 0.05 else
+            "No rechazar H₀ (sin diferencia significativa)"
+        )
+        results[var] = {'mean_control': data_c.mean(), 'mean_experimental': data_e.mean(),
+                        't_stat': t_stat, 'p_val': p_val, 'conclusion': conclusion}
     return results
 
 def hypothesis3_humidity_correlation(control_df, experimental_df):
     """
-    Enhanced Hypothesis 3 Analysis with iterative polynomial degree improvement:
-    - Starts with a baseline polynomial degree (1) and increases the degree iteratively.
-    - At each step, computes the R² score of the polynomial regression.
-    - The iteration stops when the relative improvement in R² is less than 1%.
-    - Also computes traditional linear correlation metrics, distance correlation, and mutual information.
+    Hipótesis 3 – Relación de humedad interna vs ambiental:
     """
     results = {}
-    for group_name, df_group in zip(["control", "experimental"], [control_df, experimental_df]):
+    for group_name, df_group in [('abierto', control_df), ('sellado', experimental_df)]:
         paired = df_group[['hum_int', 'hum_ext']].dropna()
         if len(paired) < 3:
-            results[group_name] = {"error": "Insufficient data"}
+            results[group_name] = {'error': 'Datos insuficientes'}
             continue
-            
-        hum_int = paired['hum_int']
-        hum_ext = paired['hum_ext']
-        
-        # Basic statistics
-        stats_results = {
-            "n_samples": len(paired),
-            "hum_int_mean": hum_int.mean(),
-            "hum_ext_mean": hum_ext.mean()
-        }
-        
-        # Traditional correlation analysis
+        x, y = paired['hum_ext'], paired['hum_int']
         try:
-            shapiro_int = stats.shapiro(hum_int)
-            shapiro_ext = stats.shapiro(hum_ext)
-            normality = shapiro_int[1] > 0.05 and shapiro_ext[1] > 0.05
-        except Exception as e:
-            normality = False
-            
-        if normality:
-            corr_method = "Pearson"
-            corr_coef, p_val = stats.pearsonr(hum_int, hum_ext)
+            p_x, p_y = stats.shapiro(x)[1], stats.shapiro(y)[1]
+            normal = (p_x > 0.05 and p_y > 0.05)
+        except:
+            normal = False
+        if normal:
+            method, (coef, p_val) = 'Pearson', stats.pearsonr(x, y)
         else:
-            corr_method = "Spearman"
-            corr_coef, p_val = stats.spearmanr(hum_int, hum_ext)
-        
-        # Non-linear correlation metrics
-        distance_corr = dcor.distance_correlation(hum_int, hum_ext)
-        mi = mutual_info_regression(hum_ext.values.reshape(-1, 1), hum_int.values)[0]
-        
-        # Polynomial degree iterative improvement
-        initial_degree = 1
-        poly = PolynomialFeatures(degree=initial_degree)
-        X_poly = poly.fit_transform(hum_ext.values.reshape(-1, 1))
-        model = LinearRegression().fit(X_poly, hum_int)
-        best_r2 = r2_score(hum_int, model.predict(X_poly))
-        best_degree = initial_degree
-        best_model = model
-        
-        next_degree = initial_degree + 1
-        max_degree = 10  # maximum degree to consider
-        while next_degree <= max_degree:
-            poly = PolynomialFeatures(degree=next_degree)
-            X_poly = poly.fit_transform(hum_ext.values.reshape(-1, 1))
-            model = LinearRegression().fit(X_poly, hum_int)
-            current_r2 = r2_score(hum_int, model.predict(X_poly))
-            # Calculate relative improvement in R²
-            improvement = (current_r2 - best_r2) / best_r2 if best_r2 != 0 else np.inf
-            if improvement < 0.000000000000001:  # less than 1% improvement: stop iterating
+            method, (coef, p_val) = 'Spearman', stats.spearmanr(x, y)
+        dist_corr = dcor.distance_correlation(x, y)
+        mi = mutual_info_regression(x.values.reshape(-1,1), y.values)[0]
+        best_degree, best_r2 = 1, None
+        poly = PolynomialFeatures(degree=1)
+        Xp = poly.fit_transform(x.values.reshape(-1,1))
+        model = LinearRegression().fit(Xp, y)
+        best_r2 = r2_score(y, model.predict(Xp))
+        while best_degree < 10:
+            deg = best_degree + 1
+            poly_new = PolynomialFeatures(degree=deg)
+            Xp_new = poly_new.fit_transform(x.values.reshape(-1,1))
+            m_new = LinearRegression().fit(Xp_new, y)
+            r2_new = r2_score(y, m_new.predict(Xp_new))
+            if (r2_new - best_r2)/best_r2 < 0.01:
                 break
-            best_r2 = current_r2
-            best_degree = next_degree
-            best_model = model
-            next_degree += 1
-        
-        results[group_name] = {
-            **stats_results,
-            "linear_analysis": {
-                "method": corr_method,
-                "coef": corr_coef,
-                "p_value": p_val,
-                "normality_test": (shapiro_int[1], shapiro_ext[1])
-            },
-            "non_linear_analysis": {
-                "distance_correlation": distance_corr,
-                "mutual_information": mi,
-                "best_poly_degree": best_degree,
-                "best_poly_r2": best_r2,
-                "polynomial_model": best_model
-            }
-        }
-    
+            best_degree, best_r2, model = deg, r2_new, m_new
+        results[group_name] = {'n': len(paired), 'linear_analysis': {
+                'method': method, 'coef': coef, 'p_val': p_val,
+                'normal_p': (p_x, p_y)
+            }, 'non_linear_analysis': {
+                'dist_corr': dist_corr, 'mutual_info': mi,
+                'best_degree': best_degree, 'best_r2': best_r2,
+                'model': model
+            }}
     return results
 
 def generate_graphs(df, control_df, experimental_df, h3_results):
-    """
-    Generates and saves graphical outputs for the analyses under the OUTPUT_DIR.
-    
-    Hypothesis 1:
-      - Time series plot of pH over the experiment duration with a line indicating the split.
-      - Boxplot comparing pH distributions between control and experimental groups.
-      
-    Hypothesis 2:
-      - Side-by-side boxplots for internal temperature and internal humidity.
-      
-    Hypothesis 3:
-      - Scatter plots (with regression lines) showing the relationship between internal and ambient humidity
-        for control and experimental groups.
-    """
-    # Ensure output directory exists
     ensure_output_dir()
-    
-    # --- Hypothesis 1: pH Time Series and Boxplot ---
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(df['timestamp'], df['ph'], label='pH', color='blue')
-    midpoint = control_df['timestamp'].iloc[-1]
-    ax.axvline(x=midpoint, color='red', linestyle='--', label='Group Split')
-    ax.set_xlabel("Timestamp")
-    ax.set_ylabel("pH")
-    ax.set_title("Time Series of pH with Control/Experimental Split")
+    # Divisor fijo en gráficos
+    split_time = SPLIT_TIMESTAMP
+    # Hipótesis 1
+    fig, ax = plt.subplots(figsize=(10,6))
+    ax.plot(df['timestamp'], df['ph'], label='pH')
+    ax.axvline(split_time, color='red', linestyle='--', label='Fecha de corte')
+    ax.set_xlabel('Fecha y hora')
+    ax.set_ylabel('pH')
+    ax.set_title('Serie de tiempo: pH del sustrato')
     ax.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis1_timeseries.png"))
-    plt.close()
-    
-    fig, ax = plt.subplots(figsize=(8, 6))
-    data_to_plot = [control_df['ph'].dropna(), experimental_df['ph'].dropna()]
-    ax.boxplot(data_to_plot, labels=['Control', 'Experimental'])
-    ax.set_ylabel("pH")
-    ax.set_title("Boxplot of Substrate pH by Group")
-    plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis1_boxplot.png"))
-    plt.close()
-    
-    # --- Hypothesis 2: Side-by-Side Boxplots for Internal Conditions ---
-    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-    axs[0].boxplot([control_df['temp_int'].dropna(), experimental_df['temp_int'].dropna()],
-                   labels=['Control', 'Experimental'])
-    axs[0].set_title("Internal Temperature")
-    axs[0].set_ylabel("Temperature (°C)")
-    axs[1].boxplot([control_df['hum_int'].dropna(), experimental_df['hum_int'].dropna()],
-                   labels=['Control', 'Experimental'])
-    axs[1].set_title("Internal Humidity")
-    axs[1].set_ylabel("Humidity (%)")
-    plt.suptitle("Boxplots of Internal Temperature and Humidity")
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis2_boxplots.png"))
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis1_tiempo.png'))
     plt.close()
 
-    # --- Enhanced Hypothesis 3 Visualizations ---
-    plt.figure(figsize=(12, 6))
-    groups = {'Control': control_df, 'Experimental': experimental_df}
-    
-    for idx, (group_name, group_df) in enumerate(groups.items(), 1):
-        paired = group_df[['hum_int', 'hum_ext']].dropna()
-        if len(paired) < 3:
-            continue
-            
-        x = paired['hum_ext']
-        y = paired['hum_int']
-        
-        # Main scatter plot with best polynomial fit
-        plt.subplot(2, 2, idx)
+    fig, ax = plt.subplots(figsize=(8,6))
+    ax.boxplot([control_df['ph'].dropna(), experimental_df['ph'].dropna()],
+               labels=['Abierto','Sellado'])
+    ax.set_ylabel('pH')
+    ax.set_title('pH del sustrato por periodo')
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis1_caja.png'))
+    plt.close()
+
+    # Hipótesis 2
+    fig, axes = plt.subplots(1,2, figsize=(12,6))
+    axes[0].boxplot([control_df['temp_int'].dropna(), experimental_df['temp_int'].dropna()],
+                    labels=['Abierto','Sellado'])
+    axes[0].set_title('Temperatura interna (°C)')
+    axes[1].boxplot([control_df['hum_int'].dropna(), experimental_df['hum_int'].dropna()],
+                    labels=['Abierto','Sellado'])
+    axes[1].set_title('Humedad interna (%)')
+    plt.suptitle('Comparativa de condiciones internas')
+    plt.tight_layout(rect=[0,0,1,0.95])
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis2_cajas.png'))
+    plt.close()
+
+    # Hipótesis 3
+    plt.figure(figsize=(12,6))
+    for i, (label, grp) in enumerate([('Abierto', control_df), ('Sellado', experimental_df)], start=1):
+        paired = grp[['hum_int','hum_ext']].dropna()
+        if len(paired) < 3: continue
+        x, y = paired['hum_ext'], paired['hum_int']
+        deg = h3_results[label.lower()]['non_linear_analysis']['best_degree']
+        model = h3_results[label.lower()]['non_linear_analysis']['model']
+        poly = PolynomialFeatures(degree=deg)
+        Xp = poly.fit_transform(x.values.reshape(-1,1))
+        plt.subplot(2,2,i)
         plt.scatter(x, y, alpha=0.6)
-        # Retrieve best polynomial degree and model from hypothesis3 results
-        best_degree = h3_results[group_name.lower()]["non_linear_analysis"]["best_poly_degree"]
-        poly = PolynomialFeatures(degree=best_degree)
-        poly.fit(x.values.reshape(-1, 1))
-        best_model = h3_results[group_name.lower()]["non_linear_analysis"]["polynomial_model"]
-        x_vals = np.linspace(x.min(), x.max(), 100)
-        y_vals = best_model.predict(poly.transform(x_vals.reshape(-1, 1)))
-        plt.plot(x_vals, y_vals, 'r--', label=f'Poly Degree {best_degree} Fit')
-
-        # Residual plot using the fitted poly transformer
-        plt.subplot(2, 2, idx+2)
-        X_poly = poly.transform(x.values.reshape(-1, 1))
-        residuals = y - best_model.predict(X_poly)
-        plt.scatter(x, residuals, alpha=0.6)
-        plt.axhline(0, color='red', linestyle='--')
-        plt.xlabel('Ambient Humidity')
-        plt.ylabel('Residuals')
-        plt.title('Residual Analysis')
-            
+        xs = np.linspace(x.min(), x.max(), 100)
+        ys = model.predict(poly.transform(xs.reshape(-1,1)))
+        plt.plot(xs, ys, linestyle='--')
+        plt.xlabel('Humedad ambiental (%)')
+        plt.ylabel('Humedad interna (%)')
+        plt.title(f'{label}: Ajuste polinómico (grado {deg})')
+        plt.subplot(2,2,i+2)
+        res = y - model.predict(Xp)
+        plt.scatter(x, res, alpha=0.6)
+        plt.axhline(0, linestyle='--')
+        plt.xlabel('Hum. ambiental (%)')
+        plt.ylabel('Residuos')
+        plt.title(f'{label}: Residuos')
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR, "hypothesis3_analysis.png"))
+    plt.savefig(os.path.join(OUTPUT_DIR, 'hipotesis3_analisis.png'))
     plt.close()
 
-
-def generate_report(total_duration, total_records, control_df, experimental_df, h1_results, h2_results, h3_results):
-    """
-    Generates a Markdown report summarizing:
-      - Experiment duration and record counts.
-      - Data split between control and experimental groups.
-      - Results (statistics, test details, and conclusions) for each hypothesis.
-      - References to the generated graphs.
-      
-    The report is saved as 'report.md' under the OUTPUT_DIR.
-    """
-    # Ensure output directory exists
+def generate_report(total_duration, total_records, control_df, experimental_df, h1, h2, h3):
     ensure_output_dir()
-    
-    report_lines = []
-    report_lines.append("# Mesocosmos Experiment Analysis Report")
-    report_lines.append("")
-    report_lines.append("## Experiment Overview")
-    report_lines.append(f"- **Total Duration:** {total_duration}")
-    report_lines.append(f"- **Total Records:** {total_records}")
-    report_lines.append(f"- **Control Group (Open) Records:** {len(control_df)}")
-    report_lines.append(f"- **Experimental Group (Sealed) Records:** {len(experimental_df)}")
-    report_lines.append("")
-    
-    # Hypothesis 1
-    report_lines.append("## Hypothesis 1 – Variations in Substrate pH")
-    report_lines.append(f"- **Mean pH (Control):** {h1_results['mean_ph_control']:.3f}")
-    report_lines.append(f"- **Mean pH (Experimental):** {h1_results['mean_ph_experimental']:.3f}")
-    report_lines.append(f"- **t-statistic:** {h1_results['t_stat']:.3f}")
-    report_lines.append(f"- **p-value:** {h1_results['p_val']:.3f}")
-    report_lines.append(f"- **Conclusion:** {h1_results['conclusion']}")
-    report_lines.append("")
-    report_lines.append("**Graphical Outputs:**")
-    report_lines.append("- Time Series Plot: `hypothesis1_timeseries.png`")
-    report_lines.append("- Boxplot: `hypothesis1_boxplot.png`")
-    report_lines.append("")
-    
-    # Hypothesis 2
-    report_lines.append("## Hypothesis 2 – Influence of Ambient Temperature on Internal Conditions")
-    temp_res = h2_results['temp_int']
-    report_lines.append("### Internal Temperature")
-    report_lines.append(f"- **Mean (Control):** {temp_res['mean_control']:.3f}")
-    report_lines.append(f"- **Mean (Experimental):** {temp_res['mean_experimental']:.3f}")
-    report_lines.append(f"- **t-statistic:** {temp_res['t_stat']:.3f}")
-    report_lines.append(f"- **p-value:** {temp_res['p_val']:.3f}")
-    report_lines.append(f"- **Conclusion:** {temp_res['conclusion']}")
-    report_lines.append("")
-    hum_res = h2_results['hum_int']
-    report_lines.append("### Internal Humidity")
-    report_lines.append(f"- **Mean (Control):** {hum_res['mean_control']:.3f}")
-    report_lines.append(f"- **Mean (Experimental):** {hum_res['mean_experimental']:.3f}")
-    report_lines.append(f"- **t-statistic:** {hum_res['t_stat']:.3f}")
-    report_lines.append(f"- **p-value:** {hum_res['p_val']:.3f}")
-    report_lines.append(f"- **Conclusion:** {hum_res['conclusion']}")
-    report_lines.append("")
-    report_lines.append("**Graphical Outputs:**")
-    report_lines.append("- Boxplots for Internal Conditions: `hypothesis2_boxplots.png`")
-    report_lines.append("")
+    lines = []
+    lines.append('# Informe de Análisis del Experimento Mesocosmos\n')
+    lines.append('## Resumen del Experimento')
+    lines.append(f'- **Duración:** {total_duration}')
+    lines.append(f'- **Total de registros:** {total_records}')
+    lines.append(f'- **Fecha de corte:** {SPLIT_TIMESTAMP}')
+    lines.append(f'- **Registros (Abierto):** {len(control_df)}')
+    lines.append(f'- **Registros (Sellado):** {len(experimental_df)}\n')
 
-    # --- Modified Hypothesis 3 Section ---
-    report_lines.append("## Hypothesis 3 – Humidity Relationship Analysis")
-    report_lines.append("### Comprehensive Linear and Non-Linear Analysis")
-    
-    for group in ['control', 'experimental']:
-        res = h3_results[group]
-        if 'error' in res:
-            report_lines.append(f"**{group.capitalize()} Group:** {res['error']}")
+    lines.append('## Hipótesis 1 – pH del Sustrato')
+    lines.append(f'- pH medio (Abierto): {h1["mean_control"]:.3f}')
+    lines.append(f'- pH medio (Sellado): {h1["mean_experimental"]:.3f}')
+    lines.append(f'- Estadístico t: {h1["t_stat"]:.3f}')
+    lines.append(f'- Valor p: {h1["p_val"]:.3f}')
+    lines.append(f'- Conclusión: {h1["conclusion"]}\n')
+    lines.append('**Gráficos:** hipotesis1_tiempo.png, hipotesis1_caja.png\n')
+
+    lines.append('## Hipótesis 2 – Condiciones Internas')
+    for var, title in [('temp_int','Temperatura interna (°C)'), ('hum_int','Humedad interna (%)')]:
+        r = h2[var]
+        lines.append(f'### {title}')
+        lines.append(f'- Media (Abierto): {r["mean_control"]:.3f}')
+        lines.append(f'- Media (Sellado): {r["mean_experimental"]:.3f}')
+        lines.append(f'- Estadístico t: {r["t_stat"]:.3f}')
+        lines.append(f'- Valor p: {r["p_val"]:.3f}')
+        lines.append(f'- Conclusión: {r["conclusion"]}\n')
+    lines.append('**Gráficos:** hipotesis2_cajas.png\n')
+
+    lines.append('## Hipótesis 3 – Relación de Humedad Interna vs Ambiental')
+    for grp, label in [('abierto','Abierto'), ('sellado','Sellado')]:
+        r = h3[grp]
+        if 'error' in r:
+            lines.append(f'**{label}:** {r["error"]}\n')
             continue
-            
-        report_lines.append(f"### {group.capitalize()} Group (n={res['n_samples']})")
-        report_lines.append("- **Linear Analysis:**")
-        report_lines.append(f"  - Method: {res['linear_analysis']['method']}")
-        report_lines.append(f"  - Coefficient: {res['linear_analysis']['coef']:.2f}")
-        report_lines.append(f"  - p-value: {res['linear_analysis']['p_value']:.3f}")
-        
-        report_lines.append("- **Non-Linear Analysis:**")
-        report_lines.append(f"  - Distance Correlation: {res['non_linear_analysis']['distance_correlation']:.2f}")
-        report_lines.append(f"  - Mutual Information: {res['non_linear_analysis']['mutual_information']:.2f}")
-        report_lines.append(f"  - Optimal Polynomial Degree: {res['non_linear_analysis']['best_poly_degree']}")
-        report_lines.append(f"  - Best R² Score: {res['non_linear_analysis']['best_poly_r2']:.2f}")
-        
-        report_lines.append("- **Interpretation:**")
-        if res['non_linear_analysis']['distance_correlation'] > 0.5:
-            report_lines.append("  - Strong non-linear relationship detected")
-        elif res['non_linear_analysis']['distance_correlation'] > 0.3:
-            report_lines.append("  - Moderate non-linear relationship detected")
-        else:
-            report_lines.append("  - Weak non-linear relationship")
-        
-        report_lines.append("")
+        la, nla = r['linear_analysis'], r['non_linear_analysis']
+        lines.append(f'### {label} (n={r["n"]})')
+        lines.append(f'- Correlación {la["method"]}: coef={la["coef"]:.2f}, p={la["p_val"]:.3f}')
+        lines.append(f'- Distance correlation: {nla["dist_corr"]:.2f}')
+        lines.append(f'- Mutual information: {nla["mutual_info"]:.2f}')
+        lines.append(f'- Mejor grado polinómico: {nla["best_degree"]}, R²={nla["best_r2"]:.2f}\n')
+    lines.append('**Gráficos:** hipotesis3_analisis.png\n')
 
-    report_lines.append("**Graphical Outputs:**")
-    report_lines.append("- Comprehensive Analysis: `hypothesis3_analysis.png`")
+    report_path = os.path.join(OUTPUT_DIR, 'reporte.md')
+    with open(report_path, 'w') as f:
+        f.write("\n".join(lines))
 
-    report_content = "\n".join(report_lines)
-    try:
-        with open(os.path.join(OUTPUT_DIR, "report.md"), "w") as report_file:
-            report_file.write(report_content)
-    except Exception as e:
-        print(f"Error writing report file: {e}")
 
 def main():
-    # Parse command-line arguments (e.g., path to the SQLite database)
-    parser = argparse.ArgumentParser(description="Mesocosmos Experiment Analysis Script")
-    parser.add_argument("--db", type=str, default="./mesocosmos.db", help="Path to the SQLite database file")
+    parser = argparse.ArgumentParser(
+        description='Script de Análisis del Experimento Mesocosmos'
+    )
+    parser.add_argument(
+        '--db', type=str, default='./mesocosmos.db',
+        help='Ruta al archivo de base de datos SQLite'
+    )
     args = parser.parse_args()
-    
-    # Load and prepare data
+
     df = load_data(args.db)
     if df.empty:
-        print("No data found in the database.")
+        print('Sin datos en la base de datos.')
         sys.exit(1)
-    
-    control_df, experimental_df, start_time, end_time = split_data(df)
-    total_duration = f"{start_time} to {end_time}"
-    total_records = len(df)
-    
-    # Perform hypothesis tests
-    h1_results = hypothesis1_ph(control_df, experimental_df)
-    h2_results = hypothesis2_internal_conditions(control_df, experimental_df)
-    h3_results = hypothesis3_humidity_correlation(control_df, experimental_df)
-    
-    # Generate graphical outputs
-    generate_graphs(df, control_df, experimental_df, h3_results)
-    
-    # Generate and save the Markdown report
-    generate_report(total_duration, total_records, control_df, experimental_df, h1_results, h2_results, h3_results)
-    
-    print("Analysis complete. All outputs are saved in the './report' directory.")
 
-if __name__ == "__main__":
+    control_df, experimental_df, inicio, fin = split_data(df)
+    duracion = f"{inicio} a {fin}"
+    total = len(df)
+
+    h1 = hypothesis1_ph(control_df, experimental_df)
+    h2 = hypothesis2_internal_conditions(control_df, experimental_df)
+    h3 = hypothesis3_humidity_correlation(control_df, experimental_df)
+
+    generate_graphs(df, control_df, experimental_df, h3)
+    generate_report(duracion, total, control_df, experimental_df, h1, h2, h3)
+
+    print('Análisis completo. Salida en el directorio ./report')
+
+if __name__ == '__main__':
     main()
