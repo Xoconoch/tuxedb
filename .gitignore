@@ -5,3 +5,5 @@
 db/
 client/backup/backup.db
 /analisis/report
+analisis/mesocosmos.db
+analisis/mesocosmos.db-journal
